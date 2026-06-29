@@ -5,45 +5,31 @@ import enTranslations from "@shopify/polaris/locales/en.json"
 import "@shopify/polaris/build/esm/styles.css"
 import { Dashboard } from "./Dashboard"
 
-/**
- * App root for the embedded experience.
- *
- * Wraps the dashboard in:
- *  - PolarisProvider for Shopify-native UI components
- *  - AppBridgeProvider for embedding + session-token auth
- *
- * The `host` and `apiKey` come from the URL/window injected by Shopify when
- * the app is loaded inside admin.
- */
-
-function getHostParam(): string | null {
-  const params = new URLSearchParams(window.location.search)
-  return params.get("host")
+function getHost(): string | null {
+  return new URLSearchParams(window.location.search).get("host")
 }
 
-const SHOPIFY_API_KEY = import.meta.env.VITE_SHOPIFY_API_KEY as string | undefined
+const API_KEY = import.meta.env.VITE_SHOPIFY_API_KEY as string | undefined
 
 export function App() {
-  const host = useMemo(getHostParam, [])
+  const host = useMemo(getHost, [])
 
-  const appBridgeConfig = useMemo(
-    () =>
-      host && SHOPIFY_API_KEY
-        ? { apiKey: SHOPIFY_API_KEY, host, forceRedirect: true }
-        : null,
-    [host],
-  )
+  const appBridgeConfig = useMemo(() => {
+    if (!host || !API_KEY) return null
 
-  // If we're not embedded (no host) we can't authenticate. Guide the user.
+    return {
+      apiKey: API_KEY,
+      host,
+      forceRedirect: true,
+    }
+  }, [host])
+
   if (!appBridgeConfig) {
     return (
       <PolarisProvider i18n={enTranslations}>
         <Page title="Decision Replay Engine">
-          <Banner tone="warning" title="Open this app from your Shopify admin">
-            <p>
-              This embedded app must be launched from inside your Shopify admin
-              so it can authenticate. Please open it from the Apps section.
-            </p>
+          <Banner tone="warning" title="Open from Shopify Admin">
+            This app must be launched inside Shopify Admin to authenticate.
           </Banner>
         </Page>
       </PolarisProvider>
