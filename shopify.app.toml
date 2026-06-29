@@ -1,0 +1,36 @@
+# Shopify app configuration.
+# Read-only, embedded app. Replace placeholder values with your own.
+client_id = "your_api_key"
+name = "Decision Replay Engine"
+application_url = "https://your-app-host.example.com"
+embedded = true
+
+[access_scopes]
+# Read-only scopes only. No write_* scopes are ever requested.
+scopes = "read_orders,read_products"
+
+[auth]
+redirect_urls = [
+  "https://your-app-host.example.com/auth/callback"
+]
+
+[webhooks]
+api_version = "2024-10"
+
+  # Mandatory GDPR / compliance webhooks
+  [[webhooks.subscriptions]]
+  topics = ["customers/data_request"]
+  uri = "/webhooks/customers/data_request"
+
+  [[webhooks.subscriptions]]
+  topics = ["customers/redact"]
+  uri = "/webhooks/customers/redact"
+
+  [[webhooks.subscriptions]]
+  topics = ["shop/redact"]
+  uri = "/webhooks/shop/redact"
+
+  # App lifecycle
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "/webhooks/app/uninstalled"
