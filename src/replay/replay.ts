@@ -8,21 +8,6 @@ import {
   type SupplierOffer,
 } from "./types.js"
 
-/**
- * Replay Engine (counterfactual decision system).
- *
- * Pure function: given one order and the set of supplier offers, it computes
- * what the cheapest viable supplier would have been for each line item and how
- * much the merchant "missed" by paying what they actually paid.
- *
- * Design notes:
- *  - Selection is lowest effective cost (price adjusted by confidence),
- *    tie-broken by faster delivery. This is intentionally simple and fully
- *    explainable for the MVP.
- *  - Savings are clamped at >= 0: you cannot "miss" a deal that was worse.
- *  - Imports nothing from Shopify or the DB. Deterministic and reproducible.
- */
-
 function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100
 }
@@ -32,35 +17,43 @@ function replayLine(
   suppliers: SupplierOffer[],
   config: ReplayConfig,
 ): DecisionTraceLine {
-  const actualLineCost = round2(line.actual_unit_cost * line.qty)
+  const qty = line.qty ?? 0
+  const actualUnit = line.actual_unit_cost ?? 0
+  const actualLineCost = round2(actualUnit * qty)
 
-  // Only suppliers offering THIS sku, above the confidence floor.
   const candidates = suppliers.filter(
-    (s) => s.sku === line.sku && s.confidence >= config.minConfidence,
+    (s) =>
+      s.sku === line.sku &&
+      s.confidence >= config.minConfidence &&
+      Number.isFinite(s.unit_price),
   )
 
   if (candidates.length === 0) {
     return {
       sku: line.sku,
       title: line.title,
-      qty: line.qty,
-      actual_unit_cost: line.actual_unit_cost,
+      qty,
+      actual_unit_cost: actualUnit,
       actual_line_cost: actualLineCost,
       best_supplier: null,
       simulated_unit_cost: null,
       simulated_line_cost: null,
       line_savings: 0,
       candidates: [],
-      reason: `No alternative supplier on file for SKU "${line.sku}". Nothing to compare.`,
+      reason: `No alternative supplier for SKU ${line.sku}`,
     }
   }
 
-  // Effective cost = price divided by confidence so uncertain offers rank lower.
   const scored = candidates
-    .map((s) => ({
-      supplier: s,
-      effectiveUnitCost: s.unit_price / Math.max(s.confidence, 0.01),
-    }))
+    .map((s) => {
+      const unit = Number.isFinite(s.unit_price) ? s.unit_price : 0
+      const confidence = Math.max(Number(s.confidence ?? 0), 0.01)
+
+      return {
+        supplier: s,
+        effectiveUnitCost: unit / confidence,
+      }
+    })
     .sort((a, b) => {
       if (a.effectiveUnitCost !== b.effectiveUnitCost) {
         return a.effectiveUnitCost - b.effectiveUnitCost
@@ -68,9 +61,26 @@ function replayLine(
       return a.supplier.delivery_days - b.supplier.delivery_days
     })
 
-  const winner = scored[0].supplier
-  const simulatedUnitCost = winner.unit_price
-  const simulatedLineCost = round2(simulatedUnitCost * line.qty)
+  const winner = scored[0]?.supplier
+
+  if (!winner) {
+    return {
+      sku: line.sku,
+      title: line.title,
+      qty,
+      actual_unit_cost: actualUnit,
+      actual_line_cost: actualLineCost,
+      best_supplier: null,
+      simulated_unit_cost: null,
+      simulated_line_cost: null,
+      line_savings: 0,
+      candidates: [],
+      reason: "No valid supplier candidates",
+    }
+  }
+
+  const simulatedUnit = Number.isFinite(winner.unit_price) ? winner.unit_price : 0
+  const simulatedLineCost = round2(simulatedUnit * qty)
   const lineSavings = Math.max(0, round2(actualLineCost - simulatedLineCost))
 
   const candidateScores: CandidateScore[] = scored.map((c) => ({
@@ -83,22 +93,21 @@ function replayLine(
     chosen: c.supplier.id === winner.id,
   }))
 
-  const perUnitDelta = round2(line.actual_unit_cost - simulatedUnitCost)
+  const perUnitDelta = round2(actualUnit - simulatedUnit)
+
   const reason =
     lineSavings > 0
-      ? `${winner.name} offered ${line.sku} at ${simulatedUnitCost} vs ${line.actual_unit_cost} paid ` +
-        `(${perUnitDelta} cheaper per unit x ${line.qty} = ${lineSavings} saved).`
-      : `Paid amount (${line.actual_unit_cost}/unit) was already at or below the best ` +
-        `alternative (${winner.name} at ${simulatedUnitCost}). No missed savings.`
+      ? `${winner.name} cheaper by ${perUnitDelta}/unit`
+      : `No cheaper alternative found`
 
   return {
     sku: line.sku,
     title: line.title,
-    qty: line.qty,
-    actual_unit_cost: line.actual_unit_cost,
+    qty,
+    actual_unit_cost: actualUnit,
     actual_line_cost: actualLineCost,
     best_supplier: winner.name,
-    simulated_unit_cost: simulatedUnitCost,
+    simulated_unit_cost: simulatedUnit,
     simulated_line_cost: simulatedLineCost,
     line_savings: lineSavings,
     candidates: candidateScores,
@@ -106,19 +115,19 @@ function replayLine(
   }
 }
 
-/**
- * Replay a single order against the supplier set.
- */
 export function replay(
   order: ReplayOrder,
   suppliers: SupplierOffer[],
   config: ReplayConfig = DEFAULT_REPLAY_CONFIG,
 ): ReplayResult {
-  const trace = (order.line_items ?? []).map((line) =>
+  const lines = order.line_items ?? []
+
+  const trace = lines.map((line) =>
     replayLine(line, suppliers, config),
   )
+
   const missedSavings = round2(
-    trace.reduce((sum, line) => sum + line.line_savings, 0),
+    trace.reduce((sum, l) => sum + (l.line_savings || 0), 0),
   )
 
   return {
