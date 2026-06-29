@@ -5,24 +5,43 @@ import { pool } from "./pool.js"
 
 /**
  * Applies migrate.sql against the configured database.
- * Run via `pnpm migrate`. The SQL is idempotent, so reruns are safe.
+ * Idempotent migrations (safe to rerun).
  */
 export async function runMigrations(): Promise<void> {
   const here = dirname(fileURLToPath(import.meta.url))
   const sql = await readFile(join(here, "migrate.sql"), "utf8")
-  console.log("[v0] Running database migrations...")
-  await pool.query(sql)
-  console.log("[v0] Migrations complete.")
+
+  console.log("[migrate] Starting database migrations...")
+
+  const client = await pool.connect()
+
+  try {
+    await client.query("BEGIN")
+    await client.query(sql)
+    await client.query("COMMIT")
+
+    console.log("[migrate] Migrations completed successfully.")
+  } catch (err) {
+    await client.query("ROLLBACK")
+    console.error("[migrate] Migration failed, rollback executed.")
+    throw err
+  } finally {
+    client.release()
+  }
 }
 
-// Allow running directly: `tsx src/db/migrate.ts`
-const invokedDirectly = process.argv[1] === fileURLToPath(import.meta.url)
-if (invokedDirectly) {
+// CLI runner safety
+const isDirectRun = fileURLToPath(import.meta.url) === process.argv[1]
+
+if (isDirectRun) {
   runMigrations()
-    .then(() => pool.end())
-    .then(() => process.exit(0))
-    .catch((err) => {
-      console.error("[v0] Migration failed:", err)
+    .then(async () => {
+      await pool.end()
+      process.exit(0)
+    })
+    .catch(async (err) => {
+      console.error("[migrate] Fatal error:", err)
+      await pool.end().catch(() => {})
       process.exit(1)
     })
 }
