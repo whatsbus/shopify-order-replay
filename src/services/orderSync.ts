@@ -8,13 +8,6 @@ import {
 } from "../db/queries.js"
 import type { LineItem } from "../replay/types.js"
 
-/**
- * Order Sync Service: read-only ingestion of the last ~50 orders.
- *
- * Captures each order as an immutable snapshot (idempotent upsert). Uses the
- * Admin GraphQL API with cursor pagination. No write operations.
- */
-
 const ORDERS_TO_FETCH = 50
 
 const ORDERS_QUERY = /* GraphQL */ `
@@ -76,22 +69,17 @@ function normalizeLineItems(
 ): LineItem[] {
   return edges.map((edge) => {
     const sku = edge.node.sku ?? edge.node.variant?.sku ?? "UNKNOWN"
-    const unitCost = Number.parseFloat(
-      edge.node.originalUnitPriceSet?.shopMoney.amount ?? "0",
-    )
+    const unitCost = Number(edge.node.originalUnitPriceSet?.shopMoney.amount ?? 0)
+
     return {
       sku,
       title: edge.node.title,
-      qty: edge.node.quantity,
+      qty: edge.node.quantity ?? 0,
       actual_unit_cost: Number.isFinite(unitCost) ? unitCost : 0,
     }
   })
 }
 
-/**
- * Core sync routine. Accepts a decrypted access token directly so it can be
- * called from the OAuth callback (which already has the plaintext token).
- */
 export async function syncOrders(
   shopId: number,
   shopDomain: string,
@@ -103,57 +91,67 @@ export async function syncOrders(
   let after: string | null = null
   let remaining = ORDERS_TO_FETCH
 
-  while (remaining > 0) {
-    const pageSize = Math.min(remaining, 50)
-    const data: OrdersQueryResult = await client.graphql<OrdersQueryResult>(ORDERS_QUERY, {
-      first: pageSize,
-      after,
-    })
+  try {
+    while (remaining > 0) {
+      const pageSize = Math.min(remaining, 50)
 
-    for (const edge of data.orders.edges) {
-      const node = edge.node
-      const lineItems = normalizeLineItems(node.lineItems.edges)
-      const total = Number.parseFloat(node.totalPriceSet?.shopMoney.amount ?? "0")
-
-      await upsertOrderSnapshot({
-        shopId,
-        shopifyOrderId: node.id,
-        orderName: node.name,
-        processedAt: node.processedAt,
-        currency: node.currencyCode,
-        totalActualCost: Number.isFinite(total) ? total : 0,
-        lineItems,
-        rawPayload: node,
+      const data: OrdersQueryResult = await client.graphql(ORDERS_QUERY, {
+        first: pageSize,
+        after,
       })
-      synced++
+
+      const edges = data.orders?.edges ?? []
+
+      if (edges.length === 0) break
+
+      for (const { node } of edges) {
+        const lineItems = normalizeLineItems(node.lineItems?.edges ?? [])
+        const total = Number(node.totalPriceSet?.shopMoney.amount ?? 0)
+
+        await upsertOrderSnapshot({
+          shopId,
+          shopifyOrderId: node.id,
+          orderName: node.name ?? null,
+          processedAt: node.processedAt ?? null,
+          currency: node.currencyCode ?? null,
+          totalActualCost: Number.isFinite(total) ? total : 0,
+          lineItems,
+          rawPayload: node,
+        })
+
+        synced++
+      }
+
+      after = data.orders.pageInfo.endCursor ?? null
+
+      if (!data.orders.pageInfo.hasNextPage) break
+
+      remaining -= edges.length
     }
 
-    remaining -= data.orders.edges.length
-    if (!data.orders.pageInfo.hasNextPage || data.orders.edges.length === 0) break
-    after = data.orders.pageInfo.endCursor
-  }
+    await touchShopSync(shopId)
 
-  await touchShopSync(shopId)
-  return { synced }
+    return { synced }
+  } catch (err) {
+    console.error("[sync] error:", err)
+    throw err
+  }
 }
 
-/** Fire-and-forget initial sync triggered from the OAuth callback. */
 export async function runInitialSync(
   shopId: number,
   shopDomain: string,
   accessToken: string,
 ): Promise<void> {
   const result = await syncOrders(shopId, shopDomain, accessToken)
-  console.log(`[v0] Initial sync for ${shopDomain}: ${result.synced} orders.`)
+  console.log(`[sync] initial sync ${shopDomain}: ${result.synced}`)
 }
 
-/** Sync using a stored shop row (decrypts the token). Used by /refresh. */
 export async function syncOrdersForShop(shop: ShopRow): Promise<{ synced: number }> {
   const token = decryptToken(shop.access_token)
   return syncOrders(shop.id, shop.shop_domain, token)
 }
 
-/** Convenience lookup used by routes that only have a domain. */
 export async function getInstalledShop(shopDomain: string): Promise<ShopRow | null> {
   return getShopByDomain(shopDomain)
 }
