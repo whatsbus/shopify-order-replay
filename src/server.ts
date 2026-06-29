@@ -11,59 +11,58 @@ import { refreshRouter } from "./api/refresh.js"
 import { runMigrations } from "./db/migrate.js"
 
 const app = express()
+
 app.disable("x-powered-by")
 
-// --- Webhooks: must read the RAW body for HMAC verification. Mount BEFORE
-//     the JSON body parser so express.raw() captures the bytes. ---
+// Webhooks (RAW body must be first)
 app.post(
   "/webhooks/:topicA/:topicB",
   express.raw({ type: "*/*" }),
-  (req, res) => {
-    // Reconstruct topic from path for clarity (e.g. customers/redact).
-    handleWebhook(req, res)
-  },
+  (req, res) => handleWebhook(req, res),
 )
 
-// --- Standard middleware for everything else ---
+// JSON + cookies
 app.use(express.json({ limit: "1mb" }))
 app.use(cookieParser(config.security.sessionSecret))
 
-// --- OAuth (no session token yet) ---
+// OAuth
 app.get("/auth", beginAuth)
 app.get("/auth/callback", handleCallback)
 
-// --- Health check ---
-app.get("/healthz", (_req, res) => res.json({ status: "ok" }))
+// Health
+app.get("/healthz", (_req, res) => {
+  res.json({ status: "ok" })
+})
 
-// --- Authenticated API (App Bridge session token required, tenant-scoped) ---
-app.use("/api", verifySessionToken, ordersRouter)
-app.use("/api", verifySessionToken, decisionsRouter)
-app.use("/api", verifySessionToken, suppliersRouter)
-app.use("/api", verifySessionToken, refreshRouter)
+// Authenticated API
+app.use("/api", verifySessionToken)
+app.use("/api", ordersRouter)
+app.use("/api", decisionsRouter)
+app.use("/api", suppliersRouter)
+app.use("/api", refreshRouter)
 
-// --- Catch-all error handler ---
+// Error handler
 app.use(
   (
     err: Error,
     _req: express.Request,
     res: express.Response,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _next: express.NextFunction,
   ) => {
-    console.error("[v0] Unhandled error:", err)
-    res.status(500).json({ error: "Internal server error" })
+    console.error("[server] error:", err)
+    res.status(500).json({ error: "internal_error" })
   },
 )
 
 async function start(): Promise<void> {
-  // Apply schema on boot so a fresh deploy is immediately usable.
   await runMigrations()
+
   app.listen(config.server.port, () => {
-    console.log(`[v0] Decision Replay Engine listening on :${config.server.port}`)
+    console.log(`[server] running on :${config.server.port}`)
   })
 }
 
 start().catch((err) => {
-  console.error("[v0] Failed to start server:", err)
+  console.error("[server] fatal:", err)
   process.exit(1)
 })
