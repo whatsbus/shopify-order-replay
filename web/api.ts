@@ -5,9 +5,8 @@ import { getSessionToken } from "@shopify/app-bridge/utilities"
  * Thin fetch wrapper for the embedded frontend.
  *
  * Every backend call attaches a fresh App Bridge session token in the
- * Authorization header. The backend verifies it (src/shopify/session.ts) and
- * scopes the request to the calling shop. No access token ever touches the
- * browser.
+ * Authorization header. The backend verifies it and scopes the request to
+ * the calling shop. No access token ever touches the browser.
  */
 
 export interface OrderSummary {
@@ -81,6 +80,7 @@ export interface RefreshResult {
 export function createApiClient(app: ClientApplication) {
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const token = await getSessionToken(app)
+
     const res = await fetch(`/api${path}`, {
       ...init,
       headers: {
@@ -90,13 +90,17 @@ export function createApiClient(app: ClientApplication) {
       },
     })
 
-    if (res.status === 204) {
-      return undefined as T
-    }
+    if (res.status === 204) return undefined as T
+
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string }
-      throw new Error(body.error ?? `Request failed: ${res.status}`)
+      let message = `Request failed: ${res.status}`
+      try {
+        const body = await res.json()
+        if (body?.error) message = body.error
+      } catch {}
+      throw new Error(message)
     }
+
     return (await res.json()) as T
   }
 
@@ -104,6 +108,7 @@ export function createApiClient(app: ClientApplication) {
     getSummary: () => request<OrderSummary>("/summary"),
     getOrders: () => request<OrderRow[]>("/orders"),
     getDecision: (orderId: number) => request<DecisionLog>(`/decision/${orderId}`),
+
     getSuppliers: () => request<Supplier[]>("/suppliers"),
     createSupplier: (input: Omit<Supplier, "id">) =>
       request<Supplier>("/suppliers", {
@@ -112,7 +117,11 @@ export function createApiClient(app: ClientApplication) {
       }),
     deleteSupplier: (id: number) =>
       request<void>(`/suppliers/${id}`, { method: "DELETE" }),
-    refresh: () => request<RefreshResult>("/refresh", { method: "POST" }),
+
+    refresh: () =>
+      request<RefreshResult>("/refresh", {
+        method: "POST",
+      }),
   }
 }
 
