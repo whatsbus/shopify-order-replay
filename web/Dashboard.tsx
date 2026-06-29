@@ -26,32 +26,28 @@ import {
   type Supplier,
 } from "./api"
 
-/**
- * The single dashboard screen.
- *
- *  - KPI header: total missed savings + counts + last synced + Refresh.
- *  - Supplier management modal (manual MVP input).
- *  - Orders table where each row expands to show the decision trace.
- */
-
 function formatMoney(amount: number, currency: string | null): string {
+  const n = Number.isFinite(amount) ? amount : 0
   try {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
       currency: currency ?? "USD",
-    }).format(amount)
+    }).format(n)
   } catch {
-    return `${amount.toFixed(2)} ${currency ?? ""}`.trim()
+    return `${n.toFixed(2)} ${currency ?? ""}`.trim()
   }
 }
 
 function formatDate(value: string | null): string {
   if (!value) return "—"
-  return new Date(value).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })
+  const d = new Date(value)
+  return Number.isNaN(d.getTime())
+    ? "—"
+    : d.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
 }
 
 export function Dashboard() {
@@ -113,12 +109,14 @@ export function Dashboard() {
         setDecision(null)
         return
       }
+
       setExpandedOrderId(orderId)
       setDecision(null)
       setDecisionLoading(true)
+
       try {
         const log = await api.getDecision(orderId)
-        setDecision(log)
+        setDecision(log ?? null)
       } catch {
         setDecision(null)
       } finally {
@@ -135,10 +133,10 @@ export function Dashboard() {
       orders.map((order) => [
         order.orderName ?? order.shopifyOrderId,
         formatDate(order.processedAt),
-        formatMoney(order.totalActualCost, order.currency),
+        formatMoney(Number(order.totalActualCost), order.currency),
         order.hasDecision ? (
           <Text as="span" tone={order.missedSavings > 0 ? "critical" : "success"}>
-            {formatMoney(order.missedSavings, order.currency)}
+            {formatMoney(Number(order.missedSavings), order.currency)}
           </Text>
         ) : (
           <Badge tone="attention">Not analyzed</Badge>
@@ -186,7 +184,6 @@ export function Dashboard() {
           </Layout.Section>
         )}
 
-        {/* KPI header */}
         <Layout.Section>
           <InlineGrid columns={{ xs: 1, sm: 3 }} gap="400">
             <Card>
@@ -195,10 +192,11 @@ export function Dashboard() {
                   Total missed savings
                 </Text>
                 <Text as="p" variant="heading2xl">
-                  {formatMoney(summary?.totalMissedSavings ?? 0, currency)}
+                  {formatMoney(Number(summary?.totalMissedSavings ?? 0), currency)}
                 </Text>
               </BlockStack>
             </Card>
+
             <Card>
               <BlockStack gap="100">
                 <Text as="h3" variant="headingSm" tone="subdued">
@@ -209,6 +207,7 @@ export function Dashboard() {
                 </Text>
               </BlockStack>
             </Card>
+
             <Card>
               <BlockStack gap="100">
                 <Text as="h3" variant="headingSm" tone="subdued">
@@ -224,14 +223,10 @@ export function Dashboard() {
           </InlineGrid>
         </Layout.Section>
 
-        {/* Empty states */}
         {suppliers.length === 0 && (
           <Layout.Section>
             <Banner tone="info" title="Add suppliers to start replaying">
-              <p>
-                The replay engine compares what you paid against alternative
-                suppliers. Add at least one supplier offer, then run a refresh.
-              </p>
+              <p>Add supplier offers to enable comparison engine.</p>
               <Box paddingBlockStart="200">
                 <Button onClick={() => setSupplierModalOpen(true)}>Add suppliers</Button>
               </Box>
@@ -239,7 +234,6 @@ export function Dashboard() {
           </Layout.Section>
         )}
 
-        {/* Orders table */}
         <Layout.Section>
           <Card padding="0">
             <Box padding="400">
@@ -247,11 +241,11 @@ export function Dashboard() {
                 Orders
               </Text>
             </Box>
+
             {orders.length === 0 ? (
               <Box padding="400">
                 <Text as="p" tone="subdued">
-                  No orders synced yet. Click “Refresh & replay” to pull your
-                  latest orders from Shopify.
+                  No orders synced yet.
                 </Text>
               </Box>
             ) : (
@@ -264,7 +258,6 @@ export function Dashboard() {
           </Card>
         </Layout.Section>
 
-        {/* Expanded decision trace */}
         {expandedOrderId !== null && (
           <Layout.Section>
             <Card>
@@ -272,21 +265,26 @@ export function Dashboard() {
                 <Text as="h3" variant="headingMd">
                   Decision trace
                 </Text>
-                {decisionLoading && <Spinner accessibilityLabel="Loading trace" size="small" />}
+
+                {decisionLoading && (
+                  <Spinner accessibilityLabel="Loading trace" size="small" />
+                )}
+
                 {!decisionLoading && !decision && (
                   <Text as="p" tone="subdued">
-                    No decision log for this order yet. Run a refresh to generate one.
+                    No decision log.
                   </Text>
                 )}
+
                 {decision && (
                   <BlockStack gap="300">
                     <Text as="p">
                       Engine {decision.engineVersion} • Missed{" "}
-                      <Text as="span" fontWeight="bold" tone="critical">
-                        {formatMoney(decision.missedSavings, decision.currency)}
-                      </Text>{" "}
-                      on this order.
+                      <Text as="span" tone="critical" fontWeight="bold">
+                        {formatMoney(Number(decision.missedSavings), decision.currency)}
+                      </Text>
                     </Text>
+
                     {decision.trace.map((line, idx) => (
                       <Box
                         key={`${line.sku}-${idx}`}
@@ -299,6 +297,7 @@ export function Dashboard() {
                             <Text as="span" fontWeight="semibold">
                               {line.title} ({line.sku}) × {line.qty}
                             </Text>
+
                             <Text
                               as="span"
                               tone={line.line_savings > 0 ? "critical" : "success"}
@@ -309,13 +308,15 @@ export function Dashboard() {
                                 : "Best price"}
                             </Text>
                           </InlineStack>
+
                           <Text as="p" tone="subdued">
                             {line.reason}
                           </Text>
+
                           {line.best_supplier && (
                             <Text as="p" variant="bodySm" tone="subdued">
-                              Paid {formatMoney(line.actual_unit_cost, decision.currency)}/unit •
-                              Best alternative {line.best_supplier} at{" "}
+                              Paid {formatMoney(line.actual_unit_cost, decision.currency)}/unit •{" "}
+                              Best {line.best_supplier} at{" "}
                               {formatMoney(line.simulated_unit_cost ?? 0, decision.currency)}/unit
                             </Text>
                           )}
@@ -334,28 +335,18 @@ export function Dashboard() {
         open={supplierModalOpen}
         onClose={() => setSupplierModalOpen(false)}
         suppliers={suppliers}
+        currency={currency}
         onCreate={async (input) => {
           await api.createSupplier(input)
-          const updated = await api.getSuppliers()
-          setSuppliers(updated)
+          setSuppliers(await api.getSuppliers())
         }}
         onDelete={async (id) => {
           await api.deleteSupplier(id)
-          setSuppliers((prev) => prev.filter((s) => s.id !== id))
+          setSuppliers((p) => p.filter((s) => s.id !== id))
         }}
-        currency={currency}
       />
     </Page>
   )
-}
-
-interface SupplierModalProps {
-  open: boolean
-  onClose: () => void
-  suppliers: Supplier[]
-  currency: string
-  onCreate: (input: Omit<Supplier, "id">) => Promise<void>
-  onDelete: (id: number) => Promise<void>
 }
 
 function SupplierModal({
@@ -365,101 +356,71 @@ function SupplierModal({
   currency,
   onCreate,
   onDelete,
-}: SupplierModalProps) {
+}: any) {
   const [name, setName] = useState("")
   const [sku, setSku] = useState("")
   const [unitPrice, setUnitPrice] = useState("")
   const [deliveryDays, setDeliveryDays] = useState("")
   const [saving, setSaving] = useState(false)
-  const [formError, setFormError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const reset = () => {
-    setName("")
-    setSku("")
-    setUnitPrice("")
-    setDeliveryDays("")
-    setFormError(null)
-  }
-
-  const handleSave = async () => {
-    const price = Number.parseFloat(unitPrice)
-    if (!name.trim() || !sku.trim() || !Number.isFinite(price)) {
-      setFormError("Name, SKU, and a valid unit price are required.")
-      return
-    }
-    setSaving(true)
-    setFormError(null)
-    try {
-      await onCreate({
-        name: name.trim(),
-        sku: sku.trim(),
-        unitPrice: price,
-        deliveryDays: Number.parseInt(deliveryDays || "0", 10),
-        confidence: 1,
-      })
-      reset()
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to save supplier")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const supplierRows = suppliers.map((s) => [
+  const supplierRows = suppliers.map((s: any) => [
     s.name,
     s.sku,
-    formatMoney(s.unitPrice, currency),
+    `${Number(s.unitPrice).toFixed(2)} ${currency}`,
     `${s.deliveryDays} days`,
     <Button variant="plain" tone="critical" onClick={() => onDelete(s.id)}>
       Remove
     </Button>,
   ])
 
+  const save = async () => {
+    const price = Number(unitPrice)
+    if (!name || !sku || !Number.isFinite(price)) {
+      setError("Invalid input")
+      return
+    }
+
+    setSaving(true)
+    try {
+      await onCreate({
+        name,
+        sku,
+        unitPrice: price,
+        deliveryDays: Number(deliveryDays || 0),
+        confidence: 1,
+      })
+      setName("")
+      setSku("")
+      setUnitPrice("")
+      setDeliveryDays("")
+      setError(null)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <Modal open={open} onClose={onClose} title="Manage suppliers" size="large">
+    <Modal open={open} onClose={onClose} title="Suppliers" size="large">
       <Modal.Section>
-        <BlockStack gap="400">
-          {formError && (
-            <Banner tone="critical">
-              <p>{formError}</p>
-            </Banner>
-          )}
+        <BlockStack gap="300">
+          {error && <Banner tone="critical"><p>{error}</p></Banner>}
+
           <FormLayout>
-            <FormLayout.Group>
-              <TextField
-                label="Supplier name"
-                value={name}
-                onChange={setName}
-                autoComplete="off"
-              />
-              <TextField label="SKU" value={sku} onChange={setSku} autoComplete="off" />
-            </FormLayout.Group>
-            <FormLayout.Group>
-              <TextField
-                label="Unit price"
-                type="number"
-                value={unitPrice}
-                onChange={setUnitPrice}
-                prefix={currency}
-                autoComplete="off"
-              />
-              <TextField
-                label="Delivery days"
-                type="number"
-                value={deliveryDays}
-                onChange={setDeliveryDays}
-                autoComplete="off"
-              />
-            </FormLayout.Group>
-            <Button variant="primary" onClick={handleSave} loading={saving}>
-              Add supplier
+            <TextField label="Name" value={name} onChange={setName} />
+            <TextField label="SKU" value={sku} onChange={setSku} />
+            <TextField label="Unit price" value={unitPrice} onChange={setUnitPrice} />
+            <TextField label="Delivery days" value={deliveryDays} onChange={setDeliveryDays} />
+
+            <Button loading={saving} onClick={save} variant="primary">
+              Add
             </Button>
           </FormLayout>
 
           {suppliers.length > 0 && (
             <DataTable
-              columnContentTypes={["text", "text", "numeric", "text", "text"]}
-              headings={["Supplier", "SKU", "Unit price", "Delivery", ""]}
+              columnContentTypes={["text", "text", "text", "text", "text"]}
+              headings={["Supplier", "SKU", "Price", "Delivery", ""]}
               rows={supplierRows}
             />
           )}
