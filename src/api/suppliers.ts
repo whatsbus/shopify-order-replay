@@ -8,10 +8,6 @@ import {
   upsertSupplier,
 } from "../db/queries.js"
 
-/**
- * Supplier CRUD. This is the manual MVP input for alternative supplier offers.
- * Tenant-scoped via req.shop.
- */
 export const suppliersRouter = Router()
 
 interface SupplierInput {
@@ -22,7 +18,6 @@ interface SupplierInput {
   confidence: unknown
 }
 
-/** Validate + coerce a supplier payload. Returns an error string or values. */
 function parseSupplier(body: SupplierInput):
   | { ok: true; value: { name: string; sku: string; unitPrice: number; deliveryDays: number; confidence: number } }
   | { ok: false; error: string } {
@@ -34,88 +29,131 @@ function parseSupplier(body: SupplierInput):
 
   if (!name) return { ok: false, error: "name is required" }
   if (!sku) return { ok: false, error: "sku is required" }
+
   if (!Number.isFinite(unitPrice) || unitPrice < 0) {
     return { ok: false, error: "unitPrice must be a non-negative number" }
   }
+
   if (!Number.isFinite(deliveryDays) || deliveryDays < 0) {
     return { ok: false, error: "deliveryDays must be a non-negative number" }
   }
+
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
     return { ok: false, error: "confidence must be between 0 and 1" }
   }
+
   return { ok: true, value: { name, sku, unitPrice, deliveryDays, confidence } }
+}
+
+function parseId(id: string): number | null {
+  if (!/^\d+$/.test(id)) return null
+  return Number(id)
 }
 
 function serialize(row: {
   id: number
   name: string
   sku: string
-  unit_price: string
-  delivery_days: number
-  confidence: string
+  unit_price: string | number | null
+  delivery_days: number | null
+  confidence: string | number | null
 }) {
   return {
     id: row.id,
     name: row.name,
     sku: row.sku,
-    unitPrice: Number.parseFloat(row.unit_price),
-    deliveryDays: row.delivery_days,
-    confidence: Number.parseFloat(row.confidence),
+    unitPrice: row.unit_price ? Number(row.unit_price) : 0,
+    deliveryDays: row.delivery_days ?? 0,
+    confidence: row.confidence ? Number(row.confidence) : 0,
   }
 }
 
 /** GET /api/suppliers */
 suppliersRouter.get("/suppliers", async (req: AuthedRequest, res: Response) => {
-  const shop = req.shop!
-  const rows = await listSuppliers(shop.id)
-  res.json(rows.map(serialize))
+  if (!req.shop) {
+    return res.status(401).json({ error: "Unauthorized" })
+  }
+
+  try {
+    const rows = await listSuppliers(req.shop.id)
+    return res.json(rows.map(serialize))
+  } catch (err) {
+    console.error("[suppliers] list error:", err)
+    return res.status(500).json({ error: "Internal server error" })
+  }
 })
 
 /** POST /api/suppliers */
 suppliersRouter.post("/suppliers", async (req: AuthedRequest, res: Response) => {
-  const shop = req.shop!
+  if (!req.shop) {
+    return res.status(401).json({ error: "Unauthorized" })
+  }
+
   const parsed = parseSupplier(req.body as SupplierInput)
   if (!parsed.ok) {
-    res.status(400).json({ error: parsed.error })
-    return
+    return res.status(400).json({ error: parsed.error })
   }
-  const row = await upsertSupplier({ shopId: shop.id, ...parsed.value })
-  res.status(201).json(serialize(row))
+
+  try {
+    const row = await upsertSupplier({ shopId: req.shop.id, ...parsed.value })
+    return res.status(201).json(serialize(row))
+  } catch (err) {
+    console.error("[suppliers] create error:", err)
+    return res.status(500).json({ error: "Internal server error" })
+  }
 })
 
 /** PUT /api/suppliers/:id */
 suppliersRouter.put("/suppliers/:id", async (req: AuthedRequest, res: Response) => {
-  const shop = req.shop!
-  const supplierId = Number.parseInt(req.params.id, 10)
-  if (!Number.isInteger(supplierId)) {
-    res.status(400).json({ error: "Invalid supplier id" })
-    return
+  if (!req.shop) {
+    return res.status(401).json({ error: "Unauthorized" })
   }
+
+  const supplierId = parseId(req.params.id)
+  if (!supplierId) {
+    return res.status(400).json({ error: "Invalid supplier id" })
+  }
+
   const parsed = parseSupplier(req.body as SupplierInput)
   if (!parsed.ok) {
-    res.status(400).json({ error: parsed.error })
-    return
+    return res.status(400).json({ error: parsed.error })
   }
-  const row = await updateSupplier(shop.id, supplierId, parsed.value)
-  if (!row) {
-    res.status(404).json({ error: "Supplier not found" })
-    return
+
+  try {
+    const row = await updateSupplier(req.shop.id, supplierId, parsed.value)
+
+    if (!row) {
+      return res.status(404).json({ error: "Supplier not found" })
+    }
+
+    return res.json(serialize(row))
+  } catch (err) {
+    console.error("[suppliers] update error:", err)
+    return res.status(500).json({ error: "Internal server error" })
   }
-  res.json(serialize(row))
 })
 
 /** DELETE /api/suppliers/:id */
 suppliersRouter.delete("/suppliers/:id", async (req: AuthedRequest, res: Response) => {
-  const shop = req.shop!
-  const supplierId = Number.parseInt(req.params.id, 10)
-  if (!Number.isInteger(supplierId)) {
-    res.status(400).json({ error: "Invalid supplier id" })
-    return
+  if (!req.shop) {
+    return res.status(401).json({ error: "Unauthorized" })
   }
-  const removed = await deleteSupplier(shop.id, supplierId)
-  if (!removed) {
-    res.status(404).json({ error: "Supplier not found" })
-    return
+
+  const supplierId = parseId(req.params.id)
+  if (!supplierId) {
+    return res.status(400).json({ error: "Invalid supplier id" })
   }
-  res.status(204).send()
+
+  try {
+    const removed = await deleteSupplier(req.shop.id, supplierId)
+
+    if (!removed) {
+      return res.status(404).json({ error: "Supplier not found" })
+    }
+
+    return res.status(204).send()
+  } catch (err) {
+    console.error("[suppliers] delete error:", err)
+    return res.status(500).json({ error: "Internal server error" })
+  }
 })
